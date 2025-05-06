@@ -17,6 +17,7 @@ from torchvision.transforms import functional as FT, ToTensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from PIL import Image
+import time
 
 from inference.frame_selection.frame_selection import select_next_candidates
 from model.network import XMem
@@ -39,7 +40,10 @@ def _inference_on_video(frames_with_masks, imgs_in_path, masks_in_path, masks_ou
                         object_color_if_single_object=(255, 255, 255), 
                         print_fps=False,
                         image_saving_max_queue_size=200):
+
+    start = time.time()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    #device = 'cpu'
     
     torch.autograd.set_grad_enabled(False)
     frames_with_masks = set(frames_with_masks)
@@ -71,8 +75,13 @@ def _inference_on_video(frames_with_masks, imgs_in_path, masks_in_path, masks_ou
     stats = []
 
     total_processing_time = 0.0
+    print(f'Time in preprocessing: {time.time()-start}')
     with ParallelImageSaver(config['masks_out_path'], vid_name=vid_name, overlay_color_if_b_and_w=object_color_if_single_object, max_queue_size=image_saving_max_queue_size) as im_saver:
+        masks = []
+        total_items = len(loader)
         for ti, data in enumerate(tqdm(loader, disable=not print_progress)):
+            # if ti!=total_items-1:
+            #     continue
             with torch.cuda.amp.autocast(enabled=True):
                 data: Sample = data  # Just for Intellisense
                 # No batch dimension here, just single samples
@@ -127,7 +136,8 @@ def _inference_on_video(frames_with_masks, imgs_in_path, masks_in_path, masks_ou
                 if config['save_masks']:
                     out_mask = mapper.remap_index_mask(out_mask)
                     out_img = Image.fromarray(out_mask)
-                    out_img = vid_reader.map_the_colors_back(out_img)
+                    out_img = vid_reader.map_the_colors_back(out_img)   
+                    masks.append(out_img)
 
                     im_saver.save_mask(mask=out_img, frame_name=sample.frame)
 
@@ -136,6 +146,7 @@ def _inference_on_video(frames_with_masks, imgs_in_path, masks_in_path, masks_ou
                         im_saver.save_overlay(orig_img=original_img, mask=out_img, frame_name=sample.frame)
         im_saver.wait_for_jobs_to_finish(verbose=True)
 
+
     if print_fps:
         print(f"TOTAL PRELOADING TIME: {total_preloading_time:.4f}s")
         print(f"TOTAL PROCESSING TIME: {total_processing_time:.4f}s")
@@ -143,13 +154,16 @@ def _inference_on_video(frames_with_masks, imgs_in_path, masks_in_path, masks_ou
         print(f"TOTAL PROCESSING FPS: {len(loader) / total_processing_time:.4f}")
         print(f"TOTAL FPS (excluding image saving): {len(loader) / (total_preloading_time + total_processing_time):.4f}")
 
-    return pd.DataFrame(stats)
+    #return pd.DataFrame(stats)
+    return masks
 
 def _load_main_objects(imgs_in_path, masks_in_path, config):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    #device = 'cpu'
     model_path = config['model']
     network = XMem(config, model_path, pretrained_key_encoder=False, pretrained_value_encoder=False).to(device).eval()
     if model_path is not None:
+        #model_weights = torch.load(model_path, map_location=torch.device('cpu'))
         model_weights = torch.load(model_path)
         network.load_weights(model_weights, init_as_zero_if_needed=True)
     else:
@@ -200,10 +214,11 @@ def _create_dataloaders(imgs_in_path: Union[str, PathLike], masks_in_path: Union
 
 def _preload_permanent_memory(frames_to_put_in_permanent_memory: List[int], vid_reader: VideoReader, mapper: MaskMapper, processor: InferenceCore, augment_images_with_masks=False):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    #device = 'cpu'
     total_preloading_time = 0
     at_least_one_mask_loaded = False
     for j in frames_to_put_in_permanent_memory:
-        sample: Sample = vid_reader[j]
+        sample: Sample = vid_reader[0]
         sample = replace(sample, rgb=sample.rgb.to(device))
 
         # https://github.com/hkchengrex/XMem/issues/21 just make exhaustive = True
